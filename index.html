@@ -334,13 +334,61 @@ let S={habits:[],completions:{},emotionLog:[],streak:0};
 let selMood=null, selIcon='💪', habitToDel=null, curFilter='all', swipedId=null;
 let txStart=0, tyStart=0;
 
-function load(){try{const s=localStorage.getItem('trackerState');if(s)S=JSON.parse(s)}catch(e){}
-  S.habits=S.habits||[];S.completions=S.completions||{};S.emotionLog=S.emotionLog||[];S.streak=S.streak||0}
-function save(){localStorage.setItem('trackerState',JSON.stringify(S))}
+// ── Persistence: IndexedDB (primary) + localStorage (fallback) ──
+const DB_NAME='trackerDB', DB_VER=1, STORE='state', KEY='main';
+let db=null;
+
+function openDB(){
+  return new Promise((res,rej)=>{
+    const req=indexedDB.open(DB_NAME,DB_VER);
+    req.onupgradeneeded=e=>e.target.result.createObjectStore(STORE);
+    req.onsuccess=e=>{db=e.target.result;res(db)};
+    req.onerror=()=>rej(req.error);
+  });
+}
+function dbGet(){
+  return new Promise((res,rej)=>{
+    if(!db){res(null);return}
+    const tx=db.transaction(STORE,'readonly');
+    const req=tx.objectStore(STORE).get(KEY);
+    req.onsuccess=()=>res(req.result||null);
+    req.onerror=()=>res(null);
+  });
+}
+function dbSet(val){
+  return new Promise((res,rej)=>{
+    if(!db){res();return}
+    const tx=db.transaction(STORE,'readwrite');
+    tx.objectStore(STORE).put(val,KEY);
+    tx.oncomplete=()=>res();
+    tx.onerror=()=>res();
+  });
+}
+
+async function load(){
+  try{ await openDB(); }catch(e){ db=null; }
+  let parsed=null;
+  // Try IndexedDB first
+  try{ parsed=await dbGet(); }catch(e){}
+  // Fallback to localStorage
+  if(!parsed){
+    try{ const s=localStorage.getItem('trackerState'); if(s) parsed=JSON.parse(s); }catch(e){}
+  }
+  if(parsed){ S=parsed; }
+  S.habits=S.habits||[];S.completions=S.completions||{};S.emotionLog=S.emotionLog||[];S.streak=S.streak||0;
+}
+
+function save(){
+  // Write to both storages for maximum resilience
+  try{ localStorage.setItem('trackerState',JSON.stringify(S)); }catch(e){}
+  dbSet(S).catch(()=>{});
+}
 function dkey(d){return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
 function today(){return dkey(new Date())}
 
-function init(){load();calcStreak();updateHeader();renderHabits();renderHistory();renderStats()}
+async function init(){
+  await load();
+}
 
 function updateHeader(){
   const n=new Date(),h=n.getHours();
@@ -800,8 +848,21 @@ function saveHabit(){
 
 function showToast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2400)}
 
-function seed(){if(!S.habits.length){S.habits=[{id:'1',name:'Entreno / Gym',icon:'💪'},{id:'2',name:'Lectura 30 min',icon:'📚'},{id:'3',name:'Agua 2L',icon:'💧'},{id:'4',name:'Sin procesados',icon:'🥗'}];save()}}
-seed();init();
+// ── Service Worker registration ──
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('/tracker/sw.js').catch(()=>{});
+}
+
+async function start(){
+  await init();
+  // Seed defaults only after load, so we know if habits is truly empty
+  if(!S.habits.length){
+    S.habits=[{id:'1',name:'Entreno / Gym',icon:'💪'},{id:'2',name:'Lectura 30 min',icon:'📚'},{id:'3',name:'Agua 2L',icon:'💧'},{id:'4',name:'Sin procesados',icon:'🥗'}];
+    save();
+  }
+  calcStreak();updateHeader();renderHabits();renderHistory();renderStats();
+}
+start();
 </script>
 </body>
 </html>
